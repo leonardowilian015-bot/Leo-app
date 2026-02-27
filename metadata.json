@@ -1,0 +1,5 @@
+{
+  "name": "VozFinanças - Gestor de Gastos por Voz",
+  "description": "Um assistente financeiro pessoal minimalista controlado inteiramente por voz. Registre gastos, consulte saldos e gerencie suas finanças conversando naturalmente.",
+  "requestFramePermissions": ["microphone"]
+}
