@@ -45,46 +45,89 @@ export default function App() {
   const audioQueue = useRef<Int16Array[]>([]);
   const isPlaying = useRef(false);
 
+  // Data persistence logic using localStorage
+  const loadLocalData = useCallback(() => {
+    const savedExpenses = localStorage.getItem('vozfinancas_expenses');
+    if (savedExpenses) {
+      const parsed = JSON.parse(savedExpenses);
+      setExpenses(parsed);
+      updateSummary(parsed);
+    }
+  }, []);
+
+  const saveLocalData = (newExpenses: Expense[]) => {
+    localStorage.setItem('vozfinancas_expenses', JSON.stringify(newExpenses));
+    setExpenses(newExpenses);
+    updateSummary(newExpenses);
+  };
+
+  const updateSummary = (allExpenses: Expense[]) => {
+    const today = new Date().toISOString().split('T')[0];
+    const daily = allExpenses
+      .filter(e => e.date.startsWith(today))
+      .reduce((sum, e) => sum + e.amount, 0);
+    
+    const categories: Record<string, number> = {};
+    allExpenses.forEach(e => {
+      categories[e.category_name] = (categories[e.category_name] || 0) + e.amount;
+    });
+    
+    const byCategory = Object.entries(categories).map(([name, total]) => ({ name, total }));
+    setSummary({ daily, byCategory });
+  };
+
   // Check auth status on mount
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const res = await fetch('/api/auth/status');
-        const data = await res.json();
-        setIsSetupNeeded(data.isSetupNeeded);
-        // If no password is set, we still show the setup screen which is "locked"
-      } catch (e) {
-        console.error("Auth check failed", e);
-      }
-    };
-    checkAuth();
-  }, []);
+    const storedPassword = localStorage.getItem('vozfinancas_password');
+    setIsSetupNeeded(!storedPassword);
+    loadLocalData();
+  }, [loadLocalData]);
 
   const handleAuth = async (e: FormEvent) => {
     e.preventDefault();
     setAuthError("");
-    const endpoint = isSetupNeeded ? '/api/auth/setup' : '/api/auth/login';
     
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: passwordInput })
-      });
-      
-      if (res.ok) {
-        setIsLocked(false);
-        setIsSetupNeeded(false);
-        setPasswordInput("");
-        fetchData();
-      } else {
-        const data = await res.json();
-        setAuthError(data.message || "Erro ao autenticar");
+    if (isSetupNeeded) {
+      if (passwordInput.length < 4) {
+        setAuthError("A senha deve ter pelo menos 4 caracteres");
+        return;
       }
-    } catch (e) {
-      setAuthError("Erro de conexão");
+      localStorage.setItem('vozfinancas_password', passwordInput);
+      setIsLocked(false);
+      setIsSetupNeeded(false);
+      setPasswordInput("");
+    } else {
+      const storedPassword = localStorage.getItem('vozfinancas_password');
+      if (storedPassword === passwordInput) {
+        setIsLocked(false);
+        setPasswordInput("");
+      } else {
+        setAuthError("Senha incorreta");
+      }
     }
   };
+
+  // API Fallback logic (trying to keep it compatible with server if it exists)
+  const fetchData = useCallback(async () => {
+    // We prioritize localStorage for reliability on static hosts
+    loadLocalData();
+    
+    // Optional: Sync with server if available
+    try {
+      const res = await fetch('/api/expenses');
+      if (res.ok) {
+        const data = await res.json();
+        // If server has data, we could merge or overwrite, but for now let's stick to local for simplicity
+        // saveLocalData(data); 
+      }
+    } catch (e) {
+      console.log("Server not available, using local storage only.");
+    }
+  }, [loadLocalData]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   // Check permission on mount
   useEffect(() => {
@@ -128,26 +171,6 @@ export default function App() {
       setHasPermission(false);
     }
   };
-
-  // Fetch data
-  const fetchData = useCallback(async () => {
-    try {
-      const [expRes, sumRes] = await Promise.all([
-        fetch('/api/expenses'),
-        fetch('/api/summary')
-      ]);
-      const expData = await expRes.json();
-      const sumData = await sumRes.json();
-      setExpenses(expData);
-      setSummary(sumData);
-    } catch (error) {
-      console.error("Error fetching data:", error);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
 
   // Audio Playback logic
   const playNextInQueue = useCallback(() => {
@@ -340,23 +363,34 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
               for (const call of message.toolCall.functionCalls) {
                 let result;
                 if (call.name === "add_expense") {
-                  const res = await fetch('/api/expenses', {
+                  const newExpense: Expense = {
+                    id: Date.now(),
+                    amount: call.args.amount as number,
+                    description: call.args.description as string,
+                    category_name: call.args.category as string,
+                    date: new Date().toISOString()
+                  };
+                  const updated = [...expenses, newExpense];
+                  saveLocalData(updated);
+                  result = { status: "success", expense: newExpense };
+                  
+                  // Background sync if server exists
+                  fetch('/api/expenses', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(call.args)
-                  });
-                  result = await res.json();
-                  fetchData();
+                  }).catch(() => {});
                 } else if (call.name === "get_expenses") {
-                  const res = await fetch('/api/expenses');
-                  result = await res.json();
+                  result = expenses;
                 } else if (call.name === "delete_expense") {
-                  const res = await fetch(`/api/expenses/${call.args.id}`, { method: 'DELETE' });
-                  result = await res.json();
-                  fetchData();
+                  const updated = expenses.filter(e => e.id !== call.args.id);
+                  saveLocalData(updated);
+                  result = { status: "success" };
+                  
+                  // Background sync if server exists
+                  fetch(`/api/expenses/${call.args.id}`, { method: 'DELETE' }).catch(() => {});
                 } else if (call.name === "get_summary") {
-                  const res = await fetch('/api/summary');
-                  result = await res.json();
+                  result = summary;
                 }
                 
                 session.sendToolResponse({
@@ -737,9 +771,10 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
                     <div className="flex items-center gap-4">
                       <p className="font-mono font-semibold text-sm">R$ {expense.amount.toFixed(2)}</p>
                       <button 
-                        onClick={async () => {
-                          await fetch(`/api/expenses/${expense.id}`, { method: 'DELETE' });
-                          fetchData();
+                        onClick={() => {
+                          const updated = expenses.filter(e => e.id !== expense.id);
+                          saveLocalData(updated);
+                          fetch(`/api/expenses/${expense.id}`, { method: 'DELETE' }).catch(() => {});
                         }}
                         className="p-2 text-black/20 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
                       >
