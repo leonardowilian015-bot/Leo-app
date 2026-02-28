@@ -25,6 +25,11 @@ db.exec(`
     FOREIGN KEY (category_id) REFERENCES categories (id)
   );
 
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  );
+
   INSERT OR IGNORE INTO categories (name) VALUES ('Alimentação'), ('Transporte'), ('Lazer'), ('Saúde'), ('Educação'), ('Outros');
 `);
 
@@ -33,6 +38,28 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(express.json());
+
+  // Auth Endpoints
+  app.get("/api/auth/status", (req, res) => {
+    const password = db.prepare("SELECT value FROM settings WHERE key = 'password'").get();
+    res.json({ isSetupNeeded: !password });
+  });
+
+  app.post("/api/auth/setup", (req, res) => {
+    const { password } = req.body;
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('password', ?)").run(password);
+    res.json({ status: "success" });
+  });
+
+  app.post("/api/auth/login", (req, res) => {
+    const { password } = req.body;
+    const stored = db.prepare("SELECT value FROM settings WHERE key = 'password'").get();
+    if (stored && stored.value === password) {
+      res.json({ status: "success" });
+    } else {
+      res.status(401).json({ status: "error", message: "Senha incorreta" });
+    }
+  });
 
   // API Routes
   app.get("/api/expenses", (req, res) => {

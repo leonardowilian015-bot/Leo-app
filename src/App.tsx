@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, FormEvent } from 'react';
 import { GoogleGenAI, Modality, Type } from "@google/genai";
-import { Mic, MicOff, Wallet, TrendingUp, History, Calendar as CalendarIcon, Trash2, Plus } from 'lucide-react';
+import { Mic, MicOff, Wallet, TrendingUp, History, Calendar as CalendarIcon, Trash2, Plus, Lock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Types
@@ -31,6 +31,10 @@ export default function App() {
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
+  const [isLocked, setIsLocked] = useState(true);
+  const [isSetupNeeded, setIsSetupNeeded] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [authError, setAuthError] = useState("");
   
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -40,6 +44,47 @@ export default function App() {
   const sessionRef = useRef<any>(null);
   const audioQueue = useRef<Int16Array[]>([]);
   const isPlaying = useRef(false);
+
+  // Check auth status on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const res = await fetch('/api/auth/status');
+        const data = await res.json();
+        setIsSetupNeeded(data.isSetupNeeded);
+        // If no password is set, we still show the setup screen which is "locked"
+      } catch (e) {
+        console.error("Auth check failed", e);
+      }
+    };
+    checkAuth();
+  }, []);
+
+  const handleAuth = async (e: FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    const endpoint = isSetupNeeded ? '/api/auth/setup' : '/api/auth/login';
+    
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: passwordInput })
+      });
+      
+      if (res.ok) {
+        setIsLocked(false);
+        setIsSetupNeeded(false);
+        setPasswordInput("");
+        fetchData();
+      } else {
+        const data = await res.json();
+        setAuthError(data.message || "Erro ao autenticar");
+      }
+    } catch (e) {
+      setAuthError("Erro de conexão");
+    }
+  };
 
   // Check permission on mount
   useEffect(() => {
@@ -400,6 +445,55 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
 
   return (
     <div className="min-h-screen bg-[#F5F5F5] text-[#1A1A1A] font-sans selection:bg-emerald-100">
+      {/* Auth Overlay */}
+      <AnimatePresence>
+        {isLocked && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[110] bg-white flex flex-col items-center justify-center p-8 text-center"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="max-w-xs w-full space-y-8"
+            >
+              <div className="w-24 h-24 bg-black rounded-3xl mx-auto flex items-center justify-center text-white shadow-2xl">
+                <Wallet size={48} />
+              </div>
+              <div className="space-y-4">
+                <h2 className="text-3xl font-bold tracking-tight">
+                  {isSetupNeeded ? "Criar Senha" : "Acesso Restrito"}
+                </h2>
+                <p className="text-black/50 leading-relaxed">
+                  {isSetupNeeded 
+                    ? "Crie uma senha para proteger seus dados financeiros." 
+                    : "Digite sua senha para acessar o VozFinanças."}
+                </p>
+              </div>
+              <form onSubmit={handleAuth} className="space-y-4">
+                <input 
+                  type="password"
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  placeholder="Sua senha"
+                  autoFocus
+                  className="w-full p-4 bg-black/5 border-2 border-transparent rounded-2xl text-center font-mono text-xl focus:outline-none focus:border-black transition-colors"
+                />
+                {authError && <p className="text-xs text-red-500 font-bold">{authError}</p>}
+                <button 
+                  type="submit"
+                  className="w-full py-5 bg-black text-white rounded-2xl font-bold text-lg shadow-xl hover:bg-zinc-800 active:scale-95 transition-all"
+                >
+                  {isSetupNeeded ? "Salvar Senha" : "Entrar"}
+                </button>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Initial Permission Overlay */}
       <AnimatePresence>
         {!hasPermission && (
@@ -505,6 +599,13 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
             <p className="text-[10px] uppercase tracking-wider text-black/40 font-bold">Gasto Hoje</p>
             <p className="text-lg font-mono font-medium">R$ {summary.daily.toFixed(2)}</p>
           </div>
+          <button 
+            onClick={() => setIsLocked(true)}
+            className="w-10 h-10 rounded-full bg-black/5 flex items-center justify-center hover:bg-black/10 transition-colors"
+            title="Bloquear App"
+          >
+            <Lock size={18} />
+          </button>
         </div>
       </header>
 
