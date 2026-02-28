@@ -30,6 +30,7 @@ export default function App() {
   const [lastResponse, setLastResponse] = useState<string>("");
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -39,6 +40,49 @@ export default function App() {
   const sessionRef = useRef<any>(null);
   const audioQueue = useRef<Int16Array[]>([]);
   const isPlaying = useRef(false);
+
+  // Check permission on mount
+  useEffect(() => {
+    const checkPermission = async () => {
+      try {
+        const result = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+        if (result.state === 'granted') {
+          setHasPermission(true);
+        } else if (result.state === 'denied') {
+          setHasPermission(false);
+        } else {
+          setHasPermission(null); // Prompt needed
+        }
+        
+        result.onchange = () => {
+          setHasPermission(result.state === 'granted');
+        };
+      } catch (e) {
+        console.warn("Permissions API not supported", e);
+      }
+    };
+    checkPermission();
+
+    // Try to trigger prompt automatically on mount (some browsers allow this)
+    const timer = setTimeout(() => {
+      if (hasPermission === null) {
+        requestInitialPermission();
+      }
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [hasPermission]);
+
+  const requestInitialPermission = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(track => track.stop()); // Just to trigger prompt
+      setHasPermission(true);
+    } catch (err) {
+      console.error("Initial permission error:", err);
+      setHasPermission(false);
+    }
+  };
 
   // Fetch data
   const fetchData = useCallback(async () => {
@@ -113,17 +157,37 @@ export default function App() {
 
     try {
       setStatus("Solicitando microfone...");
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        } 
-      });
+      
+      // Check if mediaDevices is supported
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("NOT_SUPPORTED");
+      }
+
+      let stream: MediaStream;
+      try {
+        // Try with advanced constraints first
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          } 
+        });
+      } catch (e) {
+        console.warn("Advanced constraints failed, trying simple audio:true", e);
+        // Fallback to simple constraints
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+      
       streamRef.current = stream;
       
+      const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) {
+        throw new Error("AUDIO_CONTEXT_NOT_SUPPORTED");
+      }
+
       if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+        audioContextRef.current = new AudioContextClass({ sampleRate: 16000 });
       }
       const audioContext = audioContextRef.current;
       
@@ -290,12 +354,12 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
         }
         const average = sum / bufferLength;
 
-        if (average < 10) { // Threshold for silence
+        if (average < 15) { // Threshold for silence (slightly higher for mobile noise)
           if (!silenceTimerRef.current) {
             silenceTimerRef.current = setTimeout(() => {
               console.log("Silence detected, stopping...");
               stopRecording();
-            }, 2500); // Stop after 2.5 seconds of silence
+            }, 3000); // Stop after 3 seconds of silence
           }
         } else {
           if (silenceTimerRef.current) {
@@ -317,9 +381,15 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
       source.connect(processor);
       processor.connect(audioContext.destination);
 
-    } catch (err) {
+    } catch (err: any) {
       console.error("Microphone error:", err);
-      setStatus("Microfone bloqueado ou não suportado");
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setStatus("Permissão de microfone negada. Ative nas configurações do navegador.");
+      } else if (err.message === "NOT_SUPPORTED" || err.message === "AUDIO_CONTEXT_NOT_SUPPORTED") {
+        setStatus("Seu navegador não suporta gravação de áudio.");
+      } else {
+        setStatus("Erro ao acessar microfone. Verifique as permissões.");
+      }
     }
   };
 
@@ -330,6 +400,48 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
 
   return (
     <div className="min-h-screen bg-[#F5F5F5] text-[#1A1A1A] font-sans selection:bg-emerald-100">
+      {/* Initial Permission Overlay */}
+      <AnimatePresence>
+        {!hasPermission && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-white flex flex-col items-center justify-center p-8 text-center"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="max-w-xs space-y-8"
+            >
+              <div className="w-24 h-24 bg-emerald-500 rounded-3xl mx-auto flex items-center justify-center text-white shadow-2xl shadow-emerald-200">
+                <Mic size={48} />
+              </div>
+              <div className="space-y-4">
+                <h2 className="text-3xl font-bold tracking-tight">Bem-vindo ao VozFinanças</h2>
+                <p className="text-black/50 leading-relaxed">
+                  Para começar a registrar seus gastos por voz, precisamos da sua permissão para usar o microfone.
+                </p>
+              </div>
+              <div className="space-y-4">
+                <button 
+                  onClick={requestInitialPermission}
+                  className="w-full py-5 bg-emerald-500 text-white rounded-2xl font-bold text-lg shadow-xl shadow-emerald-200 hover:bg-emerald-600 active:scale-95 transition-all"
+                >
+                  Ativar Microfone
+                </button>
+                {hasPermission === false && (
+                  <p className="text-xs text-red-500 font-medium">
+                    O microfone parece estar bloqueado. <br/>
+                    Por favor, ative nas configurações do seu navegador.
+                  </p>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Calendar Modal */}
       <AnimatePresence>
         {isCalendarOpen && (
@@ -417,6 +529,14 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
 
           <div className="relative z-10 text-center space-y-2">
             <p className="text-sm font-medium text-black/60">{status}</p>
+            {status.includes("Permissão") && (
+              <button 
+                onClick={startRecording}
+                className="text-xs text-emerald-600 font-bold underline block mx-auto mt-2"
+              >
+                Tentar novamente
+              </button>
+            )}
             {lastResponse && (
               <motion.p 
                 initial={{ opacity: 0, y: 10 }}
