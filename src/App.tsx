@@ -461,13 +461,20 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
       processor.connect(audioContext.destination);
 
     } catch (err: any) {
-      console.error("Microphone error:", err);
+      console.error("Microphone error details:", err);
+      setIsRecording(false);
+      
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setStatus("Permissão de microfone negada. Ative nas configurações do navegador.");
+        setStatus("Permissão negada. Clique no cadeado/ícone de câmera na barra de endereço e permita o microfone.");
+        setHasPermission(false);
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        setStatus("Nenhum microfone encontrado no seu dispositivo.");
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        setStatus("O microfone já está sendo usado por outro aplicativo.");
       } else if (err.message === "NOT_SUPPORTED" || err.message === "AUDIO_CONTEXT_NOT_SUPPORTED") {
-        setStatus("Seu navegador não suporta gravação de áudio.");
+        setStatus("Seu navegador não suporta esta tecnologia de voz.");
       } else {
-        setStatus("Erro ao acessar microfone. Verifique as permissões.");
+        setStatus("Erro técnico no microfone. Tente recarregar a página.");
       }
     }
   };
@@ -559,10 +566,17 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
                   Ativar Microfone
                 </button>
                 {hasPermission === false && (
-                  <p className="text-xs text-red-500 font-medium">
-                    O microfone parece estar bloqueado. <br/>
-                    Por favor, ative nas configurações do seu navegador.
-                  </p>
+                  <div className="space-y-2 p-4 bg-red-50 rounded-xl border border-red-100">
+                    <p className="text-xs text-red-600 font-bold">
+                      O microfone está bloqueado no seu navegador.
+                    </p>
+                    <p className="text-[10px] text-red-500 leading-tight">
+                      Para resolver: <br/>
+                      1. Toque no ícone de cadeado na barra de endereço lá em cima. <br/>
+                      2. Mude a chave do microfone para "Permitir" ou "Ativado". <br/>
+                      3. Recarregue a página.
+                    </p>
+                  </div>
                 )}
               </div>
             </motion.div>
@@ -663,10 +677,13 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
           )}
 
           <div className="relative z-10 text-center space-y-2">
-            <p className="text-sm font-medium text-black/60">{status}</p>
-            {status.includes("Permissão") && (
+            <p className="text-sm font-medium text-black/60 px-4">{status}</p>
+            {(status.includes("Permissão") || status.includes("Erro")) && (
               <button 
-                onClick={startRecording}
+                onClick={() => {
+                  setHasPermission(null);
+                  startRecording();
+                }}
                 className="text-xs text-emerald-600 font-bold underline block mx-auto mt-2"
               >
                 Tentar novamente
