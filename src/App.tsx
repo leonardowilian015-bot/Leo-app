@@ -112,13 +112,26 @@ export default function App() {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setStatus("Solicitando microfone...");
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } 
+      });
       streamRef.current = stream;
       
       if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContext({ sampleRate: 16000 });
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       }
       const audioContext = audioContextRef.current;
+      
+      // Crucial for mobile: resume context on user gesture
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+
       const source = audioContext.createMediaStreamSource(stream);
       
       // Analyser for silence detection
@@ -132,6 +145,7 @@ export default function App() {
 
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
+      setStatus("Conectando ao assistente...");
       const session = await ai.live.connect({
         model: "gemini-2.5-flash-native-audio-preview-09-2025",
         config: {
@@ -254,6 +268,7 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
           onclose: () => stopRecording(),
           onerror: (e) => {
             console.error("Live API Error:", e);
+            setStatus("Erro na conexão com o assistente");
             stopRecording();
           }
         }
@@ -304,7 +319,7 @@ Se o usuário quiser apagar algo, liste os gastos recentes e peça para confirma
 
     } catch (err) {
       console.error("Microphone error:", err);
-      setStatus("Erro ao acessar microfone");
+      setStatus("Microfone bloqueado ou não suportado");
     }
   };
 
